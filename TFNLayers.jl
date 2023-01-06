@@ -11,8 +11,8 @@ include("Spherical.jl")
 
 struct FLayer
     R::Chain # Radial NN
-    Ys::Vector{Function} # SH for this ℓf
-    ℓf::Int # Filter angular momentum
+    Ys::Vector{Function} # SH functions for this ℓf
+    ℓf::Int # Filter angular momentum # TODO Consider removing
 end
 
 function FLayer(Ys::Vector{Function})
@@ -29,12 +29,19 @@ end
 
 function (F::FLayer)(rr)
     # Apply R to the input radii
-    rr_radial = rr[:,1]'
-    R_out = F.R(rr_radial)
+    rr_radial_mat = @view rr[:, :, 1, :]
+    shape = size(rr_radial_mat)
+    rr_radials_vec = reshape(rr_radial_mat, 1, :)
+
+    R_out_vec = F.R(rr_radials_vec)
+    R_out = reshape(R_out_vec, shape)
 
     # Multiply by SH components
-    Y_out = reduce(hcat, [Y.(rr[:,2], rr[:,3]) for Y in F.Ys])
-    R_out' .* Y_out
+    θs = @view rr[:,:,2,:]
+    ϕs = @view rr[:,:,3,:]
+    Y_out = Flux.batch([Y.(θs, ϕs) for Y in F.Ys])
+    
+    R_out .* Y_out
 end
 
 Flux.@functor FLayer (R,)
