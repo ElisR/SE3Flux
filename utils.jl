@@ -56,18 +56,11 @@ Replace every Float64 in an expression with Float32, and return its equivalent f
 Bodge by using regex to replace floats e.g. `4.263 -> 4.263f0`.
 This should stop returned functions from promoting Float32 arguments to Float64.
 """
-function convert_expr_to_F32(Y_expr::Expr)
+function convert_expr_to_F32(Y_expr::Expr)::Function
     # Tidying string by removing filler.
     str = Base.remove_linenums!(Y_expr) |> repr
     str_F32 = replace(str, r"\d+\.\d+" => s"\g<0>f0")
-    Y = str_F32 |> Meta.parse |> eval |> eval
-
-    # Adding some type annotation
-    function Y_F32(θ, ϕ)::Float32
-        Y(θ, ϕ)
-    end
-
-    return Y_F32
+    str_F32 |> Meta.parse |> eval |> eval
 end
 
 function generate_Yℓms(ℓ::Int)
