@@ -1,3 +1,6 @@
+using Symbolics
+using SphericalHarmonics
+
 """
     `acos_nonan(a::T)`
 
@@ -49,12 +52,30 @@ function pairwise_rs(rs::Array{T, 3}) where T
 end
 
 """
-Replace every Float64 in an expression with Float32, and return a function
+Replace every Float64 in an expression with Float32, and return its equivalent function.
+Bodge by using regex to replace floats e.g. `4.263 -> 4.263f0`.
+This should stop returned functions from promoting Float32 arguments to Float64.
 """
 function convert_expr_to_F32(Y_expr::Expr)
+    # Tidying string by removing filler.
     str = Base.remove_linenums!(Y_expr) |> repr
     str_F32 = replace(str, r"\d+\.\d+" => s"\g<0>f0")
-    str_F32 |> Meta.parse |> eval |> eval
+    Y = str_F32 |> Meta.parse |> eval |> eval
+
+    # Adding some type annotation
+    function Y_F32(θ, ϕ)::Float32
+        Y(θ, ϕ)
+    end
+
+    return Y_F32
+end
+
+function generate_Yℓms(ℓ::Int)
+    @variables θ::Real, ϕ::Real
+    Ys_sym = computeYlm(θ, ϕ; lmax=ℓ, SHType=SphericalHarmonics.RealHarmonics())
+    keys = [(ℓ, m) for m in -ℓ:ℓ]
+
+    [convert_expr_to_F32(build_function(Ys_sym[key] |> simplify, θ, ϕ)) for key in keys]
 end
 
 #=
