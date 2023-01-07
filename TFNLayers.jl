@@ -17,24 +17,25 @@ include("utils.jl")
 One simple ℝ ≥ 0 -> ℝ function broadcasted across every elements of the array.
 Function is a linear combination of basis functions ∑ᵢ aᵢ rbfᵢ(r), with learned weightings aᵢ.
 """
-struct RLayer
-    as::Vector{Float32}
+struct RLayer{A, V, Γ}
+    as::A
     # TODO Maybe add another NN to copy TFN
     
-    centers::Vector{Float32}
-    γ::Float32
+    centers::V
+    spacing::Γ
 end
 
 function RLayer(centers; init=Flux.glorot_uniform)
     n_basis = length(centers)
-    as = init(n_basis)
 
-    γ = (centers[end] - centers[1]) / n_basis
-    RLayer(as, centers, γ)
+    spacing = (centers[end] - centers[1]) / n_basis
+    RLayer(init(n_basis), centers, spacing)
 end
 
 function (R::RLayer)(radials)
-    reduce(+, [a * @.(exp(- R.γ * (radials - c)^2)) for (a, c) in zip(R.as, R.centers)])
+    based = Flux.batch([@.(exp(- R.spacing * (radials - c)^2)) for c in R.centers])
+
+    @reduce R_out[b, a, γ] := sum(k) R.as[k] * based[b, a, γ, k] 
 end
 
 Flux.@functor RLayer (as,)
@@ -45,8 +46,8 @@ Flux.@functor RLayer (as,)
 
 struct FLayer
     # Radial NN
-    R::Chain
-    #R::RLayer
+    #R::Chain
+    R::RLayer
 
     Ys::Vector{Function} # SH functions for this ℓf
     ℓf::Int # Filter angular momentum # TODO Consider removing
@@ -54,12 +55,12 @@ end
 
 function FLayer(Ys::Vector{Function}, centers::Vector{Float32})
     # Will later allow for custom spec
-    #R = RLayer(centers)
-    R = Chain(
-        Dense(1 => 5, relu),
-        Dense(5 => 5, relu),
-        Dense(5 => 1, relu)
-    )
+    R = RLayer(centers)
+    #R = Chain(
+    #    Dense(1 => 5, relu; init=Flux.glorot_uniform),
+    #    Dense(5 => 5, relu; init=Flux.glorot_uniform),
+    #    Dense(5 => 1, relu; init=Flux.glorot_uniform)
+    #)
 
     ℓf = (length(Ys) - 1) ÷ 2
     FLayer(R, Ys, ℓf)
@@ -71,9 +72,10 @@ function (F::FLayer)(rr)
 
     # Apply R to the input radii
     rr_rs = rr[:, :, 1, :]
-    rr_radials = reshape(rr_rs, 1, :)
-    R_out_vec = F.R(rr_radials)
-    R_out = reshape(R_out_vec, (n_points, n_points, n_samples))
+    #rr_radials = reshape(rr_rs, 1, :)
+    #R_out_vec = F.R(rr_radials)
+    #R_out = reshape(R_out_vec, (n_points, n_points, n_samples))
+    R_out = F.R(rr_rs)
 
     # Multiply by SH components
     θs = @view rr[:,:,2,:]
@@ -105,7 +107,7 @@ function CLayer(ℓi::Int, ℓf::Int, ℓos::Vector{Int}, centers::Vector{Float3
     Ys = generate_Yℓms(ℓf)
     F_NN = FLayer(Ys, centers)
 
-    # Not going to choose every one
+    # Not going to choose every possible output
     ℓms::Vector{Tuple{Int, Int}} = []
     CG_mats::Dict{Tuple{Int, Int}, CuArray{Float32}} = Dict()
     for ℓo in ℓos
@@ -126,8 +128,8 @@ function CLayer(ℓi::Int, ℓf::Int, ℓos::Vector{Int}, centers::Vector{Float3
     CLayer(F_NN, CG_mats, ℓi, ℓf, ℓms)
 end
 
-# Forward pass
 """
+Forward pass of CLayer
 V indexed by [mi, b]
 """
 function (C::CLayer)(rr, V)
@@ -139,11 +141,12 @@ function (C::CLayer)(rr, V)
 
     # TODO Make this general
     # For now just assume one CG_mat
-    CG_mat = C.CG_mats[C.ℓms[1]]
+    #CG_mat = C.CG_mats[C.ℓms[1]]
+    #L_tilde = CG_mat .* F_tilde
+    #@reduce L[a, γ] := sum(mi, mf) L_tilde[mi, mf, a, γ]
 
-    L_tilde = CG_mat .* F_tilde
-
-    @reduce L[a, γ] := sum(mi, mf) L_tilde[mi, mf, a, γ]
+    L_tildes = Flux.batch([C.CG_mats[key] .* F_tilde for key in C.ℓms])
+    @reduce L[a, γ, k] := sum(mi, mf) L_tildes[mi, mf, a, γ, k] # TODO Consider switching final indices around
 end
 
 Flux.@functor CLayer (F,)
