@@ -1,9 +1,13 @@
 using Flux
+using CUDA
+using NNlib
+using TensorCast
 
 # SH and CG coefficients
 using Symbolics
 using SphericalHarmonics
 include("Spherical.jl")
+include("utils.jl")
 
 # -------------------
 # R layer for basis functions
@@ -40,8 +44,9 @@ Flux.@functor RLayer (as,)
 # -------------------
 
 struct FLayer
-    #R::Chain # Radial NN
-    R::RLayer
+    # Radial NN
+    R::Chain
+    #R::RLayer
 
     Ys::Vector{Function} # SH functions for this ℓf
     ℓf::Int # Filter angular momentum # TODO Consider removing
@@ -49,7 +54,12 @@ end
 
 function FLayer(Ys::Vector{Function}, centers::Vector{Float32})
     # Will later allow for custom spec
-    R = RLayer(centers)
+    #R = RLayer(centers)
+    R = Chain(
+        Dense(1 => 5, relu),
+        Dense(5 => 5, relu),
+        Dense(5 => 1, relu)
+    )
 
     ℓf = (length(Ys) - 1) ÷ 2
     FLayer(R, Ys, ℓf)
@@ -57,10 +67,13 @@ end
 
 # Dimension needs to be made one bigger
 function (F::FLayer)(rr)
-    # Apply R to the input radii
-    rr_radials = rr[:, :, 1, :] # TODO Possibly change this back to view
+    n_points, _, _, n_samples = size(rr)
 
-    R_out = F.R(rr_radials)
+    # Apply R to the input radii
+    rr_rs = rr[:, :, 1, :]
+    rr_radials = reshape(rr_rs, 1, :)
+    R_out_vec = F.R(rr_radials)
+    R_out = reshape(R_out_vec, (n_points, n_points, n_samples))
 
     # Multiply by SH components
     θs = @view rr[:,:,2,:]
@@ -78,8 +91,8 @@ Flux.@functor FLayer (R,)
 
 struct CLayer
     F::FLayer # Trainable NN
-    CG_mats::Dict{Tuple{Int, Int}, CuArray{Float32}} # Dictionary of matrices, keyed by (ℓo, mo)
 
+    CG_mats::Dict{Tuple{Int, Int}, CuArray{Float32}} # Dictionary of matrices, keyed by (ℓo, mo)
     ℓi::Int # Input ℓ
     ℓf::Int # Filter ℓ
     ℓms::Vector{Tuple{Int, Int}} # Specifying output order
@@ -117,34 +130,7 @@ end
 """
 V indexed by [mi, b]
 """
-
-#=
 function (C::CLayer)(rr, V)
-    n_points, _, _, n_samples = size(rr)
-
-    F_out = permutedims(C.F(rr), (1, 4, 2, 3))
-    F_reshape = reshape(F_out, n_points, 2C.ℓf + 1, :)
-
-    V_repeat = repeat(V, inner=(1, 1, n_points))
-    F_tilde = batched_mul(V_repeat, F_reshape)
-
-    # TODO Make this general
-    # For now just assume one CG_mat
-    CG_mat = CuArray(C.CG_mats[C.ℓms[1]])
-
-    L_tilde = CG_mat .* F_tilde
-
-    # Steps using a lot of memory atm
-    L = sum(L_tilde, dims=(1, 2))#[1,1,:]
-    reshape(L, n_points, n_samples)
-end
-=#
-
-
-# Trying to use tensorcast
-function (C::CLayer)(rr, V)
-    n_points, _, _, n_samples = size(rr)
-
     F_out = C.F(rr)
     
     # Using Einstein summation convention for brevity
@@ -160,7 +146,6 @@ function (C::CLayer)(rr, V)
     @reduce L[a, γ] := sum(mi, mf) L_tilde[mi, mf, a, γ]
 end
 
-
 Flux.@functor CLayer (F,)
 
 #=
@@ -174,3 +159,4 @@ Constructor for `S` points, `[n_ℓ]` channels for each `ℓ`, `filter_ℓ` is a
 Spends time generating dictionary of SH functions.
 """
 function E3ConvLayer(S::Unsigned, n_ℓs::Vector{Unsigned}, ℓ_filter::Unsigned)
+=#
