@@ -9,10 +9,6 @@ using SphericalHarmonics
 include("Spherical.jl")
 include("utils.jl")
 
-# -------------------
-# R layer for basis functions
-# -------------------
-
 """
 One simple ℝ ≥ 0 -> ℝ function broadcasted across every elements of the array.
 Function is a linear combination of basis functions ∑ᵢ aᵢ rbfᵢ(r), with learned weightings aᵢ.
@@ -40,13 +36,8 @@ end
 
 Flux.@functor RLayer (as,)
 
-# -------------------
-# F layer which sums
-# -------------------
-
 struct FLayer
     # Radial NN
-    #R::Chain
     R::RLayer
 
     Ys::Vector{Function} # SH functions for this ℓf
@@ -56,11 +47,6 @@ end
 function FLayer(Ys::Vector{Function}, centers::Vector{Float32})
     # Will later allow for custom spec
     R = RLayer(centers)
-    #R = Chain(
-    #    Dense(1 => 5, relu; init=Flux.glorot_uniform),
-    #    Dense(5 => 5, relu; init=Flux.glorot_uniform),
-    #    Dense(5 => 1, relu; init=Flux.glorot_uniform)
-    #)
 
     ℓf = (length(Ys) - 1) ÷ 2
     FLayer(R, Ys, ℓf)
@@ -68,13 +54,8 @@ end
 
 # Dimension needs to be made one bigger
 function (F::FLayer)(rr)
-    n_points, _, _, n_samples = size(rr)
-
     # Apply R to the input radii
-    rr_rs = rr[:, :, 1, :]
-    #rr_radials = reshape(rr_rs, 1, :)
-    #R_out_vec = F.R(rr_radials)
-    #R_out = reshape(R_out_vec, (n_points, n_points, n_samples))
+    rr_rs = @view rr[:, :, 1, :]
     R_out = F.R(rr_rs)
 
     # Multiply by SH components
@@ -87,10 +68,6 @@ end
 
 Flux.@functor FLayer (R,)
 
-# -------------------
-# Convolution layer
-# -------------------
-
 struct CLayer
     F::FLayer # Trainable NN
 
@@ -101,13 +78,13 @@ struct CLayer
 end
 
 # Constructor
-function CLayer(ℓi::Int, ℓf::Int, ℓos::Vector{Int}, centers::Vector{Float32})
+function CLayer(((ℓi, ℓf), ℓos)::Pair{Tuple{Int, Int}, Vector{Int}}, centers::Vector{Float32})
     @assert ℓos ⊆ abs(ℓi - ℓf):(ℓi + ℓf) "Output `ℓo` not compatible with filter `ℓf` and input `ℓi`."
 
     Ys = generate_Yℓms(ℓf)
     F_NN = FLayer(Ys, centers)
 
-    # Not going to choose every possible output
+    # Not necessarily choosing every possible output
     ℓms::Vector{Tuple{Int, Int}} = []
     CG_mats::Dict{Tuple{Int, Int}, CuArray{Float32}} = Dict()
     for ℓo in ℓos
@@ -116,8 +93,6 @@ function CLayer(ℓi::Int, ℓf::Int, ℓos::Vector{Int}, centers::Vector{Float3
             CG_mat = zeros(Float32, (2ℓi + 1, 2ℓf + 1))
             for (i_i, mi) in enumerate(-ℓi:ℓi)
                 for (i_f, mf) in enumerate(-ℓf:ℓf)
-                    # TODO Check that ordering of f and i is correct
-                    # Currently giving zero
                     CG_mat[i_i, i_f] = cg(ℓi, mi, ℓf, mf, ℓo, mo)
                 end
             end
@@ -137,14 +112,10 @@ function (C::CLayer)(rr, V)
     
     # Using Einstein summation convention for brevity
     # Speed seems comparable
+    # TODO Eventually investigate batched multiplication for all these
     @reduce F_tilde[mi, mf, a, γ] := sum(b) V[mi, b, γ] * F_out[b, a, γ, mf]
 
-    # TODO Make this general
-    # For now just assume one CG_mat
-    #CG_mat = C.CG_mats[C.ℓms[1]]
-    #L_tilde = CG_mat .* F_tilde
-    #@reduce L[a, γ] := sum(mi, mf) L_tilde[mi, mf, a, γ]
-
+    #C.CG_mats[key] has dimensions [2ℓi+1, 2ℓf+1]
     L_tildes = Flux.batch([C.CG_mats[key] .* F_tilde for key in C.ℓms])
     @reduce L[a, γ, k] := sum(mi, mf) L_tildes[mi, mf, a, γ, k] # TODO Consider switching final indices around
 end
