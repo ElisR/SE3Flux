@@ -2,6 +2,7 @@ using Flux
 using CUDA
 using NNlib
 using TensorCast
+using MLUtils
 
 # SH and CG coefficients
 using Symbolics
@@ -75,7 +76,6 @@ struct CLayer
     ℓi::Int # Input ℓ
     ℓf::Int # Filter ℓ
     ℓos::Vector{Int}
-    ℓms::Vector{Tuple{Int, Int}} # Specifying output order
 end
 
 # Constructor
@@ -86,11 +86,9 @@ function CLayer(((ℓi, ℓf), ℓos)::Pair{Tuple{Int, Int}, Vector{Int}}, cente
     F_NN = FLayer(Ys, centers)
 
     # Not necessarily choosing every possible output
-    ℓms::Vector{Tuple{Int, Int}} = []
     CG_mats::Dict{Tuple{Int, Int}, CuArray{Float32}} = Dict()
     for ℓo in ℓos
         for mo in -ℓo:ℓo
-            push!(ℓms, (ℓo, mo))
             CG_mat = zeros(Float32, (2ℓi + 1, 2ℓf + 1))
             for (i_i, mi) in enumerate(-ℓi:ℓi)
                 for (i_f, mf) in enumerate(-ℓf:ℓf)
@@ -101,7 +99,7 @@ function CLayer(((ℓi, ℓf), ℓos)::Pair{Tuple{Int, Int}, Vector{Int}}, cente
         end
     end
     
-    CLayer(F_NN, CG_mats, ℓi, ℓf, ℓos, ℓms)
+    CLayer(F_NN, CG_mats, ℓi, ℓf, ℓos)
 end
 
 """
@@ -116,22 +114,52 @@ function (C::CLayer)(rr, V)
     # TODO Eventually investigate batched multiplication for all these
     @reduce F_tilde[mi, mf, a, γ] := sum(b) V[b, γ, mi] * F_out[b, a, γ, mf]
 
-    L_tildes = Tuple(Flux.batch([C.CG_mats[(ℓo, mo)] .* F_tilde for mo in -ℓo:ℓo]) for ℓo in C.ℓos)
-    Tuple(@reduce L[a, γ, mo] := sum(mi, mf) L_tilde[mi, mf, a, γ, mo] for L_tilde in L_tildes)
-    #[dropdims(sum(L_tilde, dims=(1,2)), dims=(1,2)) for L_tilde in L_tildes]
+    L_tildes = [Flux.batch([C.CG_mats[(ℓo, mo)] .* F_tilde for mo in -ℓo:ℓo]) for ℓo in C.ℓos]
+    [@reduce L[a, γ, mo] := sum(mi, mf) L_tilde[mi, mf, a, γ, mo] for L_tilde in L_tildes] # TODO Should probably return a Tuple (maybe even a tuple of vectors)
 end
 
 Flux.@functor CLayer (F,)
 
-#=
-"""
-    E3ConvLayer(S::Unsigned, n_ℓs::Vector{Unsigned}, filter_ℓ::Unsigned)
+struct NLLayer{b, S}
+    bias::b
 
-Constructor for `S` points, `[n_ℓ]` channels for each `ℓ`, `filter_ℓ` is angular momentum of filter.
+    σ::S
+end
 
-`n_ℓs` is a vector `[n_0, n_1, ..., n_L]` where `ℓ=L` is the largest nonzero angular momentum feature.
-(Preceding `n_i=0` entries must be present.)
-Spends time generating dictionary of SH functions.
+function NLLayer(channels::Int; σ = Flux.elu, init = Flux.glorot_uniform)
+    NonLinLayer(init(channels), σ)
+end
+
 """
-function E3ConvLayer(S::Unsigned, n_ℓs::Vector{Unsigned}, ℓ_filter::Unsigned)
-=#
+Take in a vector `Vs` of features `V`.
+Each `V` indexed as `[a, γ, mo]` for point `a`, sample `γ` and irrep index `mo`.
+"""
+function (nl::NLLayer)(Vs)
+    norm = .√sum(batch(Vs).^2, dims=3)
+    bias_reshaped = reshape(nl.bias, 1, 1, 1, :)
+    unbatch(@. nl.σ(norm + bias_reshaped) * V)
+end
+
+Flux.@functor NLLayer (bias,)
+
+struct SILayer
+    W
+end
+
+"""
+Self-interaction layer specified in TFN.
+"""
+function SILayer((C_in, C_out)::Pair{Int, Int}; init=Flux.glorot_uniform)
+    SILayer(init(C_out, C_in))
+end
+
+"""
+Mixing a load of channels
+"""
+function (si::SILayer)(Vs)
+    Vs_batch = batch(Vs)
+    @reduce Vs_mix[a, γ, mo, c_out] := sum(c_in) si.W[c_out, c_in] * Vs_batch[a, γ, mo, c_in]
+    unbatch(Vs_mix)
+end
+
+Flux.@functor SILayer (W,)
