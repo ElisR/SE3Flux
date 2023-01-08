@@ -74,6 +74,7 @@ struct CLayer
     CG_mats::Dict{Tuple{Int, Int}, CuArray{Float32}} # Dictionary of matrices, keyed by (ℓo, mo)
     ℓi::Int # Input ℓ
     ℓf::Int # Filter ℓ
+    ℓos::Vector{Int}
     ℓms::Vector{Tuple{Int, Int}} # Specifying output order
 end
 
@@ -100,7 +101,7 @@ function CLayer(((ℓi, ℓf), ℓos)::Pair{Tuple{Int, Int}, Vector{Int}}, cente
         end
     end
     
-    CLayer(F_NN, CG_mats, ℓi, ℓf, ℓms)
+    CLayer(F_NN, CG_mats, ℓi, ℓf, ℓos, ℓms)
 end
 
 """
@@ -113,11 +114,11 @@ function (C::CLayer)(rr, V)
     # Using Einstein summation convention for brevity
     # Speed seems comparable
     # TODO Eventually investigate batched multiplication for all these
-    @reduce F_tilde[mi, mf, a, γ] := sum(b) V[mi, b, γ] * F_out[b, a, γ, mf]
+    @reduce F_tilde[mi, mf, a, γ] := sum(b) V[b, γ, mi] * F_out[b, a, γ, mf]
 
-    #C.CG_mats[key] has dimensions [2ℓi+1, 2ℓf+1]
-    L_tildes = Flux.batch([C.CG_mats[key] .* F_tilde for key in C.ℓms])
-    @reduce L[a, γ, k] := sum(mi, mf) L_tildes[mi, mf, a, γ, k] # TODO Consider switching final indices around
+    L_tildes = Tuple(Flux.batch([C.CG_mats[(ℓo, mo)] .* F_tilde for mo in -ℓo:ℓo]) for ℓo in C.ℓos)
+    Tuple(@reduce L[a, γ, mo] := sum(mi, mf) L_tilde[mi, mf, a, γ, mo] for L_tilde in L_tildes)
+    #[dropdims(sum(L_tilde, dims=(1,2)), dims=(1,2)) for L_tilde in L_tildes]
 end
 
 Flux.@functor CLayer (F,)
