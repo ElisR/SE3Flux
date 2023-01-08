@@ -24,7 +24,6 @@ function cart_to_sph(xss::Array{T, 4}) where T
     zs = @view xss[:,:,3,:]
 
     out = similar(xss)
-
     @. out[:,:,1,:] = √(xs^2 + ys^2 + zs^2) 
     @. out[:,:,2,:] = acos_nonan(zs / out[:,:,1,:])
     @. out[:,:,3,:] = @. atan(ys, xs)
@@ -67,21 +66,15 @@ function generate_Yℓms(ℓ::Int)
     @variables θ::Real, ϕ::Real
     Ys_sym = computeYlm(θ, ϕ; lmax=ℓ, SHType=SphericalHarmonics.RealHarmonics())
     keys = [(ℓ, m) for m in -ℓ:ℓ]
+    # To access available keys, use
+    # Ys_sym.modes[1] |> collect
 
     [convert_expr_to_F32(build_function(Ys_sym[key] |> simplify, θ, ϕ)) for key in keys]
 end
 
-#=
-# Old function for conversion 
 """
-Convert cartesian vectors into spherical coordinates.
-Columns are [r, θ, ϕ]
+Utility `connection` function for `Flux.Parallel` to output tuple from input tuple.
 """
-function cart_to_sph_old(xs)
-    rs = @. √(xs[:,1]^2 + xs[:,2]^2 + xs[:,3]^2) 
-    θs = @. acos(xs[:,3] / rs)
-    ϕs = @. atan(xs[:,2], xs[:,1])
-
-    [rs θs ϕs]
+function trivial(x...)
+    x
 end
-=#
