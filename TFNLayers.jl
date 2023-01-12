@@ -9,14 +9,14 @@ using Symbolics
 using SphericalHarmonics
 include("Spherical.jl")
 include("utils.jl")
+include("alt_parallel.jl")
 
 """
 One simple ℝ ≥ 0 -> ℝ function broadcasted across every elements of the array.
 Function is a linear combination of basis functions ∑ᵢ aᵢ rbfᵢ(r), with learned weightings aᵢ.
 """
 struct RLayer{A, V, Γ}
-    as::A
-    # TODO Maybe add another NN to copy TFN
+    as::A # TODO Maybe add another NN to copy TFN
     
     centers::V
     spacing::Γ
@@ -37,15 +37,14 @@ end
 
 Flux.@functor RLayer (as,)
 
-struct FLayer
-    # Radial NN
-    R::RLayer
+struct FLayer{r, y}
+    R::r # Radial NN
 
-    Ys::Vector{Function} # SH functions for this ℓf
+    Ys::y # SH functions for this ℓf
     ℓf::Int # Filter angular momentum # TODO Consider removing
 end
 
-function FLayer(Ys::Vector{Function}, centers::Vector{Float32})
+function FLayer(Ys, centers::Vector{Float32})
     # Will later allow for custom spec
     R = RLayer(centers)
 
@@ -76,10 +75,13 @@ struct CLayer
     ℓi::Int # Input ℓ
     ℓf::Int # Filter ℓ
     ℓos::Vector{Int}
+
+    outkeys::Dict{Int, Int}
+    ℓ_max::Int
 end
 
 # Constructor
-function CLayer(((ℓi, ℓf), ℓos)::Pair{Tuple{Int, Int}, Vector{Int}}, centers::Vector{Float32})
+function CLayer(((ℓi, ℓf), ℓos)::Pair{Tuple{Int, Int}, Vector{Int}}, centers::Vector{Float32}; ℓ_max::Int = 0)
     @assert ℓos ⊆ abs(ℓi - ℓf):(ℓi + ℓf) "Output `ℓo` not compatible with filter `ℓf` and input `ℓi`."
 
     Ys = generate_Yℓms(ℓf)
@@ -98,24 +100,36 @@ function CLayer(((ℓi, ℓf), ℓos)::Pair{Tuple{Int, Int}, Vector{Int}}, cente
             CG_mats[(ℓo, mo)] = cu(CG_mat)
         end
     end
+
+    # Storing where each element will go in the tuple
+    outkeys = Dict(ℓo => i for (i, ℓo) in enumerate(ℓos))
     
-    CLayer(F_NN, CG_mats, ℓi, ℓf, ℓos)
+    CLayer(F_NN, CG_mats, ℓi, ℓf, ℓos, outkeys, max(ℓ_max, ℓos[end]))
 end
 
 """
-Forward pass of CLayer
-V indexed by [mi, b]
+Forward pass of CLayer.
+V indexed by [mi, b].
+
+Returns a tuple of vectors.
 """
 function (C::CLayer)(rr, V)
     F_out = C.F(rr)
     
-    # Using Einstein summation convention for brevity
-    # Speed seems comparable
+    # Using Einstein summation convention for brevity, with similar speed
     # TODO Eventually investigate batched multiplication for all these
     @reduce F_tilde[mi, mf, a, γ] := sum(b) V[b, γ, mi] * F_out[b, a, γ, mf]
 
     L_tildes = [Flux.batch([C.CG_mats[(ℓo, mo)] .* F_tilde for mo in -ℓo:ℓo]) for ℓo in C.ℓos]
-    [@reduce L[a, γ, mo] := sum(mi, mf) L_tilde[mi, mf, a, γ, mo] for L_tilde in L_tildes] # TODO Should probably return a Tuple (maybe even a tuple of vectors)
+    Ls = [@reduce L[a, γ, mo] := sum(mi, mf) L_tilde[mi, mf, a, γ, mo] for L_tilde in L_tildes]
+    Tuple((ℓo_pot ∈ C.ℓos) ? [Ls[C.outkeys[ℓo_pot]]] : Vector{eltype(Ls)}(undef, 0) for ℓo_pot in 0:C.ℓ_max)
+
+    # Below doesn't work
+    #map(ℓo_pot -> (ℓo_pot ∈ C.ℓos) ? [@reduce L[a, γ, mo] := sum(mi, mf) L_tildes[C.outkeys[ℓo_pot]][mi, mf, a, γ, mo]] : [], Tuple(0:C.ℓos[end]))
+end
+
+function (C::CLayer)(rrV::Tuple)
+    C(rrV...)
 end
 
 Flux.@functor CLayer (F,)
@@ -154,7 +168,7 @@ function SILayer((C_in, C_out)::Pair{Int, Int}; init=Flux.glorot_uniform)
 end
 
 """
-Mixing a load of channels
+Mixing a load of channels.
 """
 function (si::SILayer)(Vs)
     Vs_batch = batch(Vs)
@@ -163,3 +177,73 @@ function (si::SILayer)(Vs)
 end
 
 Flux.@functor SILayer (W,)
+
+# TODO Define a utility function that calculates the number of output channels
+
+"""
+Structure for orchestrating all individual convolutions.
+"""
+struct E3ConvLayer{C, P}
+    Cs::C
+
+    n_cs::Vector{Int} # Number of channels
+    pairings::P
+end
+
+"""
+Constructor for plethora of point convolutions.
+`n_cs` is number of channels for each representation, explicitly including any n_c=0.
+`pairingss` takes form
+```
+[[(ℓi=0, ℓf01) => [ℓo011, ℓo012], ℓf02 => [ℓo021]],
+ []
+ [(ℓi=2, ℓf21) => [ℓo211]]]
+```
+where each pair is a valid CLayer pairing mapping filters to output angular momenta.
+Each `ℓos` list assumed to be ordered in increasing order.
+
+e.g. for Tetris example in TFN paper, we have:
+E3ConvLayer([1], [[(0, 0) => [0], (0, 1) => [1]]]) # Layer 1
+E3ConvLayer([4, 4], [[(0, 0) => [0], (0, 1) => [1]], [(1, 0) => [1], (1, 1) => [0, 1]]) # Layer 2
+"""
+function E3ConvLayer(n_cs::Vector{Int}, pairingss::T, centers::Vector{Float32}) where T
+    @assert length(n_cs) == length(pairingss) "Filters must be specified for each rotation representation. Put empty `ℓfs` for any `n_c = 0`."
+
+    ℓis_implied = 0:(length(n_cs) - 1)
+
+    # Find maximal output dimension possible
+    ℓ_max = 0
+    for pairings in pairingss
+        for (_, ℓos) in pairings
+            ℓ_max = max(ℓ_max, ℓos[end])
+        end
+    end
+
+    overall = []
+    for (ℓi_implied, n_c, pairings) in zip(ℓis_implied, n_cs, pairingss)
+        # Apply all filters
+        in_channel = []
+        for ((ℓi, ℓf), ℓos) in pairings
+            @assert ℓi_implied == ℓi "An input ℓi is not consistent with its placement."
+
+            channel_convs = [CLayer((ℓi, ℓf) => ℓos, centers; ℓ_max = ℓ_max) for _ in 1:n_c]
+
+            # Single element things are messing it up
+            p = ParallelPassenger(tuple_connect, Tuple(channel_convs))
+            push!(in_channel, p)
+        end
+
+        # Assuming that all present ℓ has to be convolved
+        # p_ℓi could be empty if there were no channels
+        p_ℓi = (n_c > 0 && !isempty(in_channel)) ? ParallelPassenger(tuple_connect, Tuple(in_channel)) : (rs, empty) -> Tuple(empty for _ in 0:ℓ_max)
+        push!(overall, p_ℓi)
+    end
+    Cs = ParallelPassenger(tuple_connect, Tuple(overall))
+
+    E3ConvLayer(Cs, n_cs, pairingss)
+end
+
+# TODO Change this to return r too
+(e3::E3ConvLayer)(rss, Vs) = (rss, e3.Cs(rss, Vs))
+
+Flux.@functor E3ConvLayer (Cs,)
