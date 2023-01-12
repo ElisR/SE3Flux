@@ -43,7 +43,7 @@ function pairwise_rs(rs::Array{T, 3}) where T
 
     for i in 1:shape[1]
         for j in 1:shape[1]
-            out[i,j,:,:] .= @view(rs[i,:,:]) .- @view(rs[j,:,:])
+            out[i,j,:,:] .= @view(rs[j,:,:]) .- @view(rs[i,:,:])
         end
     end
 
@@ -66,8 +66,7 @@ function generate_Yℓms(ℓ::Int)
     @variables θ::Real, ϕ::Real
     Ys_sym = computeYlm(θ, ϕ; lmax=ℓ, SHType=SphericalHarmonics.RealHarmonics())
     keys = [(ℓ, m) for m in -ℓ:ℓ]
-    # To access available keys, use
-    # Ys_sym.modes[1] |> collect
+    # Ys_sym.modes[1] |> collect # to access available keys
 
     [convert_expr_to_F32(build_function(Ys_sym[key] |> simplify, θ, ϕ)) for key in keys]
 end
@@ -75,6 +74,17 @@ end
 """
 Utility `connection` function for `Flux.Parallel` to output tuple from input tuple.
 """
-function trivial(x...)
+function triv_connect(x...)
     x
+end
+
+"""
+Utility `connection` function for `Flux.Parallel` to join two tuples of vectors into one tuple of concatenated vectors from each.
+Assumes both have the same tuple length, with one possibly padded with empty vectors `[]` (of the correct type).
+Should naturally perform the concatenation mentioned in TFN paper.
+"""
+# In the main programme, tuple_connect should only receive multiple tuples, each of which has many vectors of CuArrays
+
+function tuple_connect(xs...)
+    Tuple(vcat(x...) for x in zip(xs...))
 end
