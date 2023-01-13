@@ -1,5 +1,6 @@
 using Symbolics
 using SphericalHarmonics
+using Memoize
 
 """
     `acos_nonan(a::T)`
@@ -68,7 +69,53 @@ function generate_Yℓms(ℓ::Int)
     keys = [(ℓ, m) for m in -ℓ:ℓ]
     # Ys_sym.modes[1] |> collect # to access available keys
 
-    [convert_expr_to_F32(build_function(Ys_sym[key] |> simplify, θ, ϕ)) for key in keys]
+    [convert_expr_to_F32(build_function((-1)^m * Ys_sym[(ℓ, m)] |> simplify, θ, ϕ)) for (ℓ, m) in keys]
+end
+
+"""
+Defining function for Clebsch-Gordan matrices.
+Employing a change of basis to work for real spherical harmonics.
+"""
+@memoize function generate_CG_matrices(ℓi::Int, ℓf::Int, ℓo::Int)
+    # Define basis rotation
+    Ai, Af, Ao = basis_rotation.((ℓi, ℓf, ℓo))
+
+    CG_mat = zeros(Float64, (2ℓi + 1, 2ℓf + 1, 2ℓo + 1))
+    for (i_o, mo) in enumerate(-ℓo:ℓo)
+        for (i_f, mf) in enumerate(-ℓf:ℓf)
+            for (i_i, mi) in enumerate(-ℓi:ℓi)
+                CG_mat[i_i, i_f, i_o] = cg(ℓi, mi, ℓf, mf, ℓo, mo)
+            end
+        end
+    end
+
+    @reduce CG_real[Mi, Mf, Mo] := sum(mi, mf, mo) CG_mat[mi, mf, mo] * Ao[Mo, mo] * Ai'[mi, Mi] * Af'[mf, Mf]
+    #@assert CG_real |> imag .|> Float32 |> maximum ≈ 0
+    CG_real |> real .|> Float32
+end
+
+"""
+Function for generating the basis rotation from complex to real spherical harmonics.
+Outputs a matrix, which is the matrix to invert
+"""
+@memoize function basis_rotation(ℓ::Int)
+    A = zeros(ComplexF64, (2ℓ + 1, 2ℓ + 1))
+    ind(m) = m + ℓ + 1
+    for m in -ℓ:ℓ
+        CS = (-1)^m # Condon-Shortley Phase
+        if m < 0
+            A[ind(m), ind(m)] = 1im / √2
+            A[ind(m), ind(-m)] = -CS * 1im / √2
+        elseif m > 0
+            A[ind(m), ind(m)] = CS * 1 / √2
+            A[ind(m), ind(-m)] = 1 / √2
+        else
+            A[ind(m), ind(m)] = 1
+        end
+    end
+
+    # Adding phase that supposedly makes CG real eventually
+    (-1im)^ℓ * A
 end
 
 """

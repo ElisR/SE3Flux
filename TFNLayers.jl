@@ -94,19 +94,14 @@ function CLayer(((ℓi, ℓf), ℓos)::Pair{Tuple{Int, Int}, Vector{Int}}, cente
     # Not necessarily choosing every possible output
     CG_mats::Dict{Tuple{Int, Int}, CuArray{Float32}} = Dict()
     for ℓo in ℓos
-        for mo in -ℓo:ℓo
-            CG_mat = zeros(Float32, (2ℓi + 1, 2ℓf + 1))
-            for (i_i, mi) in enumerate(-ℓi:ℓi)
-                for (i_f, mf) in enumerate(-ℓf:ℓf)
-                    CG_mat[i_i, i_f] = cg(ℓi, mi, ℓf, mf, ℓo, mo)
-                end
-            end
-            CG_mats[(ℓo, mo)] = cu(CG_mat)
+        CG_tensor = generate_CG_matrices(ℓi, ℓf, ℓo)
+        for (i, mo) in enumerate(-ℓo:ℓo)
+            CG_mats[(ℓo, mo)] = cu(@view CG_tensor[:, :, i])
         end
     end
 
     # Storing where each element will go in the tuple
-    # Needed because there will generacially be gaps for non-existent ℓo in output.
+    # Needed because there will generically be gaps for non-existent ℓo in output.
     outkeys = Dict(ℓo => i for (i, ℓo) in enumerate(ℓos))
     
     CLayer(F_NN, CG_mats, ℓi, ℓf, ℓos, outkeys, max(ℓ_max, ℓos[end]))
