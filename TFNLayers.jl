@@ -52,7 +52,6 @@ function FLayer(Ys, centers::Vector{Float32})
     FLayer(R, Ys, ℓf)
 end
 
-# Dimension needs to be made one bigger
 function (F::FLayer)(rr)
     # Apply R to the input radii
     rr_rs = @view rr[:, :, 1, :]
@@ -68,6 +67,11 @@ end
 
 Flux.@functor FLayer (R,)
 
+"""
+Structure of convolution layer defined by (ℓi, ℓf) => [ℓo1, ℓo2, ...], where ℓi and ℓf are input and filter angular momentum representations.
+Trainable component is NN `F` contains learnable radial basis functions and spherical harmonic transformations.
+Non-trainable elements include precomputed CG coefficients.
+"""
 struct CLayer
     F::FLayer # Trainable NN
 
@@ -80,7 +84,7 @@ struct CLayer
     ℓ_max::Int
 end
 
-# Constructor
+
 function CLayer(((ℓi, ℓf), ℓos)::Pair{Tuple{Int, Int}, Vector{Int}}, centers::Vector{Float32}; ℓ_max::Int = 0)
     @assert ℓos ⊆ abs(ℓi - ℓf):(ℓi + ℓf) "Output `ℓo` not compatible with filter `ℓf` and input `ℓi`."
 
@@ -102,6 +106,7 @@ function CLayer(((ℓi, ℓf), ℓos)::Pair{Tuple{Int, Int}, Vector{Int}}, cente
     end
 
     # Storing where each element will go in the tuple
+    # Needed because there will generacially be gaps for non-existent ℓo in output.
     outkeys = Dict(ℓo => i for (i, ℓo) in enumerate(ℓos))
     
     CLayer(F_NN, CG_mats, ℓi, ℓf, ℓos, outkeys, max(ℓ_max, ℓos[end]))
@@ -123,9 +128,6 @@ function (C::CLayer)(rr, V)
     L_tildes = [Flux.batch([C.CG_mats[(ℓo, mo)] .* F_tilde for mo in -ℓo:ℓo]) for ℓo in C.ℓos]
     Ls = [@reduce L[a, γ, mo] := sum(mi, mf) L_tilde[mi, mf, a, γ, mo] for L_tilde in L_tildes]
     Tuple((ℓo_pot ∈ C.ℓos) ? [Ls[C.outkeys[ℓo_pot]]] : Vector{eltype(Ls)}(undef, 0) for ℓo_pot in 0:C.ℓ_max)
-
-    # Below doesn't work
-    #map(ℓo_pot -> (ℓo_pot ∈ C.ℓos) ? [@reduce L[a, γ, mo] := sum(mi, mf) L_tildes[C.outkeys[ℓo_pot]][mi, mf, a, γ, mo]] : [], Tuple(0:C.ℓos[end]))
 end
 
 function (C::CLayer)(rrV::Tuple)
@@ -141,7 +143,7 @@ struct NLLayer{b, S}
 end
 
 function NLLayer(channels::Int; σ = Flux.elu, init = Flux.glorot_uniform)
-    NonLinLayer(init(channels), σ)
+    NLLayer(init(channels), σ)
 end
 
 """
@@ -149,9 +151,10 @@ Take in a vector `Vs` of features `V`.
 Each `V` indexed as `[a, γ, mo]` for point `a`, sample `γ` and irrep index `mo`.
 """
 function (nl::NLLayer)(Vs)
-    norm = .√sum(batch(Vs).^2, dims=3)
+    bVs = batch(Vs)
+    norm = .√sum(bVs.^2, dims=3)
     bias_reshaped = reshape(nl.bias, 1, 1, 1, :)
-    unbatch(@. nl.σ(norm + bias_reshaped) * V)
+    unbatch(@. nl.σ(norm + bias_reshaped) * bVs)
 end
 
 Flux.@functor NLLayer (bias,)
@@ -178,15 +181,30 @@ end
 
 Flux.@functor SILayer (W,)
 
-# TODO Define a utility function that calculates the number of output channels
+struct PLayer end
+
+"""
+Pooling layer.
+Assumes an input shaped `[a, γ, m]` for point `a`, sample `γ` and orbital `m`.
+Also assume `ℓ = 0` since pooling happens for final feature final feature.
+Output a matrix indexed by `[c, γ]`
+"""
+(pl::PLayer)(rssVs::Tuple) = pl(rssVs...)
+function (pl::PLayer)(rss, (Vs,))
+    #[dropdims(sum(V, dims=1); dims=1) for V in Vs]
+    Vstack = batch(Vs)
+    dropdims(sum(Vstack, dims=1); dims=(1, 3))'
+end
 
 """
 Structure for orchestrating all individual convolutions.
+`Cs` holds all of the learnable convolution layers.
+`n_cs` is the number of channels.
 """
 struct E3ConvLayer{C, P}
     Cs::C
 
-    n_cs::Vector{Int} # Number of channels
+    n_cs::Vector{Int}
     pairings::P
 end
 
@@ -235,7 +253,7 @@ function E3ConvLayer(n_cs::Vector{Int}, pairingss::T, centers::Vector{Float32}) 
 
         # Assuming that all present ℓ has to be convolved
         # p_ℓi could be empty if there were no channels
-        p_ℓi = (n_c > 0 && !isempty(in_channel)) ? ParallelPassenger(tuple_connect, Tuple(in_channel)) : (rs, empty) -> Tuple(empty for _ in 0:ℓ_max)
+        p_ℓi = (n_c > 0 && !isempty(in_channel)) ? ParallelPassenger(tuple_connect, Tuple(in_channel); singleton=true) : (rs, empty) -> Tuple(empty for _ in 0:ℓ_max)
         push!(overall, p_ℓi)
     end
     Cs = ParallelPassenger(tuple_connect, Tuple(overall))
@@ -243,7 +261,7 @@ function E3ConvLayer(n_cs::Vector{Int}, pairingss::T, centers::Vector{Float32}) 
     E3ConvLayer(Cs, n_cs, pairingss)
 end
 
-# TODO Change this to return r too
+(e3::E3ConvLayer)(rssVs::Tuple) = e3(rssVs...)
 (e3::E3ConvLayer)(rss, Vs) = (rss, e3.Cs(rss, Vs))
 
 Flux.@functor E3ConvLayer (Cs,)
