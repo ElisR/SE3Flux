@@ -24,14 +24,12 @@ end
 
 function RLayer(centers; init=Flux.glorot_uniform)
     n_basis = length(centers)
-
     spacing = (centers[end] - centers[1]) / n_basis
     RLayer(init(n_basis), centers, spacing)
 end
 
 function (R::RLayer)(radials)
     based = Flux.batch([@.(exp(- R.spacing * (radials - c)^2)) for c in R.centers])
-
     @reduce R_out[b, a, γ] := sum(k) R.as[k] * based[b, a, γ, k] 
 end
 
@@ -57,12 +55,14 @@ function (F::FLayer)(rr)
     rr_rs = @view rr[:, :, 1, :]
     R_out = F.R(rr_rs)
 
+    mask = @. abs(rr_rs) > 1e-7
+
     # Multiply by SH components
     θs = @view rr[:,:,2,:]
     ϕs = @view rr[:,:,3,:]
     Y_out = Flux.batch([Y.(θs, ϕs) for Y in F.Ys])
     
-    R_out .* Y_out
+    R_out .* Y_out .* mask
 end
 
 Flux.@functor FLayer (R,)
