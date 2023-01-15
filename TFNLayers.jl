@@ -75,7 +75,7 @@ Non-trainable elements include precomputed CG coefficients.
 struct CLayer
     F::FLayer # Trainable NN
 
-    CG_mats::Dict{Tuple{Int, Int}, CuArray{Float32}} # Dictionary of matrices, keyed by (ℓo, mo)
+    CG_mats#::Dict{Tuple{Int, Int}, CuArray{Float32}} # Dictionary of matrices, keyed by (ℓo, mo)
     ℓi::Int # Input ℓ
     ℓf::Int # Filter ℓ
     ℓos::Vector{Int}
@@ -92,11 +92,11 @@ function CLayer(((ℓi, ℓf), ℓos)::Pair{Tuple{Int, Int}, Vector{Int}}, cente
     F_NN = FLayer(Ys, centers)
 
     # Not necessarily choosing every possible output
-    CG_mats::Dict{Tuple{Int, Int}, CuArray{Float32}} = Dict()
+    CG_mats = Dict()
     for ℓo in ℓos
         CG_tensor = generate_CG_matrices(ℓi, ℓf, ℓo)
         for (i, mo) in enumerate(-ℓo:ℓo)
-            CG_mats[(ℓo, mo)] = cu(@view CG_tensor[:, :, i])
+            CG_mats[(ℓo, mo)] = (@view CG_tensor[:, :, i]) |> gpu
         end
     end
 
@@ -260,3 +260,33 @@ end
 (e3::E3ConvLayer)(rss, Vs) = (rss, e3.Cs(rss, Vs))
 
 Flux.@functor E3ConvLayer (Cs,)
+
+struct SIWrapper
+    p
+end
+
+function SIWrapper(pairs::Vector{Pair{Int, Int}})
+    SIs = Tuple(SILayer(in => out) for (in, out) in pairs)
+    p = Passenger(triv_connect, SIs...)
+
+    SIWrapper(p)
+end
+
+(swir::SIWrapper)(rxs...) = swir.p(rxs...)
+
+Flux.@functor SIWrapper
+
+struct NLWrapper
+    p
+end
+
+function NLWrapper(channels::Vector{Int})
+    NLs = Tuple(NLLayer(channel) for channel in channels)
+    p = Passenger(triv_connect, NLs...)
+
+    NLWrapper(p)
+end
+
+(nlr::NLWrapper)(rxs...) = nlr.p(rxs...)
+
+Flux.@functor NLWrapper
