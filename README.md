@@ -6,6 +6,7 @@ Implementing $SE(3)$-equivariant [Tensor Field Networks](https://arxiv.org/abs/1
 
 Rotational and translational symmetry are common in nature.
 It is therefore useful to have neural networks that can exploit this simplified structure of many physical problems, without needing to carry around redundant information.
+There are many ways to design such neural network architectures, often with a trade-off between expressivity and computational cost.
 
 A neural network acts on feature vectors, which are sometimes physical quantities.
 These quantities can transform differently under rotation depending on their _rotation representation_, indexed by the non-negative integer $\ell$.
@@ -21,16 +22,20 @@ Let's consider the architecture used for the shape classification example in the
 Here, the aim is to classify a bunch of Tetris-like blocks, of which there are 8 distinct types.
 The intrinsic rotational invariance of the network means that after being shown just one example of each block, the classifier can be equally confident in recognising the blocks even when they are arbitrarily orientated.
 
-<img src="https://user-images.githubusercontent.com/19764906/213000338-b66906d0-5adf-414d-b2b9-b1ff17ae0d02.svg" width="200">
+<p align="center">
+    <img src="https://user-images.githubusercontent.com/19764906/213000338-b66906d0-5adf-414d-b2b9-b1ff17ae0d02.svg" width="200">
+</p>
 
 Here's the network architecture we wish to implement.
 In this diagram we keep track of the rotation representations of the feature vectors, denoted by $\ell$.
 Applying the convolution is equivalent to taking the tensor product with a filter that has its own rotation representation $\ell_f$.
 Augmenting a representation $\ell_i$ with a filter $\ell_f$ produces a sum of representations $\ell_o$ in the range $| \ell_i - \ell_f | \leq \ell_o \leq \ell_i + \ell_f$ (resembling a triangle inequality between vectors).
 As detailed in the paper, special care is taken to ensure that the tensor product transforms appropriately under rotation, by weighting different terms in this sum by so-called [Clebsch-Gordan coefficients](https://en.wikipedia.org/wiki/Clebsch%E2%80%93Gordan_coefficients).
-In the network below, choose to discard any $\ell > 1$ terms.
+In the network below, we choose to discard any $\ell > 1$ terms.
 
-![TFN architecture for shape classification.](https://user-images.githubusercontent.com/19764906/212673994-37282db1-4695-434d-ba52-a4ed7d3cd15c.svg)
+<p align="center">
+<img src="https://user-images.githubusercontent.com/19764906/212673994-37282db1-4695-434d-ba52-a4ed7d3cd15c.svg" width=800>
+</p>
 
 In this repository, this is implemented with the following code block.
 `Chain` is the `Flux.jl` structure that holds sequential layers.
