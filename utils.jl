@@ -1,7 +1,3 @@
-using Symbolics
-using SphericalHarmonics
-using Memoize
-
 """
     `acos_nonan(a::T)`
 

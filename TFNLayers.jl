@@ -1,16 +1,3 @@
-using Flux
-using CUDA
-using NNlib
-using TensorCast
-using MLUtils
-
-# SH and CG coefficients
-using Symbolics
-using SphericalHarmonics
-include("Spherical.jl")
-include("utils.jl")
-include("alt_parallel.jl")
-
 """
 One simple ``\\mathbb{R} \\geq 0 \\mapsto \\mathbb{R}`` function broadcasted across every elements of the array.
 Function is a linear combination of basis functions ``\\sum_i a_i f_i(r)``, with learned weightings ``a_i``.
@@ -36,11 +23,16 @@ end
 
 Flux.@functor RLayer (as,)
 
+"""
+Structure for generating filters from TFN.
+`R` is the radial neural network.
+`Ys` is a list of **real** spherical ``Y_{\\ell m}`` harmonics ordered as ``[-\\ell_f, -(\\ell_f-1), \\ldots, \\ell_f-1, \\ell_f]``.
+"""
 struct FLayer{r, y}
-    R::r # Radial NN
+    R::r
 
-    Ys::y # SH functions for this ℓf
-    ℓf::Int # Filter angular momentum # TODO Consider removing
+    Ys::y
+    ℓf::Int
 end
 
 function FLayer(Ys, centers::Vector{Float32})
