@@ -34,7 +34,7 @@ As detailed in the paper, special care is taken to ensure that the tensor produc
 In the network below, we choose to discard any $\ell > 1$ terms.
 
 <p align="center">
-<img src="https://user-images.githubusercontent.com/19764906/212673994-37282db1-4695-434d-ba52-a4ed7d3cd15c.svg" width=800>
+<img src="https://user-images.githubusercontent.com/19764906/212673994-37282db1-4695-434d-ba52-a4ed7d3cd15c.svg" width=700>
 </p>
 
 In this repository, this is implemented with the following code block.
