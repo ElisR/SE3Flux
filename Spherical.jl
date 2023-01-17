@@ -1,5 +1,3 @@
-using Memoize
-
 """
 `cg(j1, m1, j2, m2, J, M)` : A reference implementation of
 Clebsch-Gordan coefficients based on
@@ -50,6 +48,11 @@ function convert_expr_to_F32(Y_expr::Expr)::Function
     str_F32 |> Meta.parse |> eval |> eval
 end
 
+"""
+    generate_Yℓms(ℓ)
+
+Generate list of spherical harmonic functions for `ℓ`. Functions should operate and return Float32.
+"""
 @memoize function generate_Yℓms(ℓ::Int)
     @variables θ::Real, ϕ::Real
     Ys_sym = computeYlm(θ, ϕ; lmax=ℓ, SHType=SphericalHarmonics.RealHarmonics())

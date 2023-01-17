@@ -23,7 +23,7 @@ function (pp::ParallelPassenger)(r, xs::Tuple)
         pp.connection(map(f -> f(r, xs), pp.layers)...)
     else
         _parallel_check(pp.layers, xs)
-        pp.connection(map((f, x) -> f(r, x), pp.layers, xs)...)
+        pp.connection(map((f, x) -> f(r, x), pp.layers, xs)...) # TODO Switch everything to unsplatted
     end
 end
 
