@@ -12,8 +12,8 @@ include("utils.jl")
 include("alt_parallel.jl")
 
 """
-One simple ℝ ≥ 0 -> ℝ function broadcasted across every elements of the array.
-Function is a linear combination of basis functions ∑ᵢ aᵢ rbfᵢ(r), with learned weightings aᵢ.
+One simple ``\\mathbb{R} \\geq 0 \\mapsto \\mathbb{R}`` function broadcasted across every elements of the array.
+Function is a linear combination of basis functions ``\\sum_i a_i f_i(r)``, with learned weightings ``a_i``.
 """
 struct RLayer{A, V, Γ}
     as::A # TODO Maybe add another NN to copy TFN
@@ -29,6 +29,7 @@ function RLayer(centers; init=Flux.glorot_uniform)
 end
 
 function (R::RLayer)(radials)
+    # TODO Allow custom spec radial basis functions
     based = Flux.batch([@.(exp(- R.spacing * (radials - c)^2)) for c in R.centers])
     @reduce R_out[b, a, γ] := sum(k) R.as[k] * based[b, a, γ, k] 
 end
@@ -43,7 +44,6 @@ struct FLayer{r, y}
 end
 
 function FLayer(Ys, centers::Vector{Float32})
-    # Will later allow for custom spec
     R = RLayer(centers)
 
     ℓf = (length(Ys) - 1) ÷ 2
@@ -55,6 +55,7 @@ function (F::FLayer)(rr)
     rr_rs = @view rr[:, :, 1, :]
     R_out = F.R(rr_rs)
 
+    # TODO Set the masking tolerance in constructor
     mask = @. abs(rr_rs) > 1e-7
 
     # Multiply by SH components
@@ -75,7 +76,7 @@ Non-trainable elements include precomputed CG coefficients.
 struct CLayer
     F::FLayer # Trainable NN
 
-    CG_mats#::Dict{Tuple{Int, Int}, CuArray{Float32}} # Dictionary of matrices, keyed by (ℓo, mo)
+    CG_mats # Dictionary of matrices, keyed by (ℓo, mo)
     ℓi::Int # Input ℓ
     ℓf::Int # Filter ℓ
     ℓos::Vector{Int}
@@ -137,13 +138,30 @@ struct NLLayer{b, S}
     σ::S
 end
 
+"""
+    NLLayer(channels; σ = Flux.elu, init = Flux.glorot_uniform)
+
+Nonlinear layer specified in TFN.
+Acts as scalar transformation in each `ℓ` space.
+Nonlinear element given by `σ` defines ``\\sigma^{\\ell} : \\mathbb{R} \\mapsto \\mathbb{R}``.
+Bias vector `bias` initialised according to `init`.
+"""
 function NLLayer(channels::Int; σ = Flux.elu, init = Flux.glorot_uniform)
     NLLayer(init(channels), σ)
 end
 
 """
-Take in a vector `Vs` of features `V`.
-Each `V` indexed as `[a, γ, mo]` for point `a`, sample `γ` and irrep index `mo`.
+    nl(Vs)
+
+Forward pass of `NLLayer` Take in a vector `Vs` of features `V`.
+Each `V` indexed as `[a, γ, m]` for point `a`, sample `γ` and irrep index `m`.
+Outputs quantities from TFN paper:
+
+``\\eta^{(l)}\\left(\\|V\\|_{a c}^{(l)}+b_c^{(l)}\\right) V_{a c m}^{(l)}``
+
+where
+
+``\\|V\\|_{a c}^{(l)}:=\\sqrt{\\sum_m\\left|V_{a c m}^{(l)}\\right|^2}``
 """
 function (nl::NLLayer)(Vs)
     bVs = batch(Vs)
@@ -159,18 +177,30 @@ struct SILayer
 end
 
 """
-Self-interaction layer specified in TFN.
+    SILayer(C_in => C_out; init=Flux.glorot_uniform)
+
+Self-interaction layer specified in TFN, used to scale feature vectors elementwise.
+Mixes components of feature vectors with the same representation at each point.
+`C_in` and `C_out` determine the number of input and output channels.
+`init` determines the initialisation of the weight matrix ``W``.
+
 """
 function SILayer((C_in, C_out)::Pair{Int, Int}; init=Flux.glorot_uniform)
     SILayer(init(C_out, C_in))
 end
 
 """
-Mixing a load of channels.
+    si(Vs)
+
+Performing the self-interaction according to
+``\\sum_{c'}^{C_{\\text{in}}} W_{c c'}^{(\\ell)} V_{ac'm}^{(\\ell)}``
+
+`Vs` is a vector of `V`s (one for each channel), where each `V` is indexed differently to display equation.
+Indexing follows `V[a, γ, m]`, where `γ` is the batch index.
 """
 function (si::SILayer)(Vs)
     Vs_batch = batch(Vs)
-    @reduce Vs_mix[a, γ, mo, c_out] := sum(c_in) si.W[c_out, c_in] * Vs_batch[a, γ, mo, c_in]
+    @reduce Vs_mix[a, γ, m, c_out] := sum(c_in) si.W[c_out, c_in] * Vs_batch[a, γ, m, c_in]
     unbatch(Vs_mix)
 end
 
@@ -182,13 +212,13 @@ struct PLayer end
 Pooling layer.
 Assumes an input shaped `[a, γ, m]` for point `a`, sample `γ` and orbital `m`.
 Also assume `ℓ = 0` since pooling happens for final feature final feature.
-Output a matrix indexed by `[c, γ]`
+Output a matrix indexed by `[c, γ]`.
 """
 (pl::PLayer)(rssVs::Tuple) = pl(rssVs...)
 function (pl::PLayer)(rss, (Vs,))
     #[dropdims(sum(V, dims=1); dims=1) for V in Vs]
     Vstack = batch(Vs)
-    dropdims(sum(Vstack, dims=1); dims=(1, 3))'
+    dropdims(sum(Vstack, dims=1); dims=(1, 3))' # TODO Turn this into NNlib.meanpool call
 end
 
 """
@@ -200,14 +230,14 @@ struct E3ConvLayer{C, P}
     Cs::C
 
     n_cs::Vector{Int}
-    pairings::P
+    pairingss::P
 end
 
 """
 Constructor for plethora of point convolutions.
 `n_cs` is number of channels for each representation, explicitly including any n_c=0.
 `pairingss` takes form
-```
+```jldoctest
 [[(ℓi=0, ℓf01) => [ℓo011, ℓo012], ℓf02 => [ℓo021]],
  []
  [(ℓi=2, ℓf21) => [ℓo211]]]
@@ -216,8 +246,10 @@ where each pair is a valid CLayer pairing mapping filters to output angular mome
 Each `ℓos` list assumed to be ordered in increasing order.
 
 e.g. for Tetris example in TFN paper, we have:
-E3ConvLayer([1], [[(0, 0) => [0], (0, 1) => [1]]]) # Layer 1
-E3ConvLayer([4, 4], [[(0, 0) => [0], (0, 1) => [1]], [(1, 0) => [1], (1, 1) => [0, 1]]) # Layer 2
+```jldoctest
+conv1 = E3ConvLayer([1], [[(0, 0) => [0], (0, 1) => [1]]])
+conv2 = E3ConvLayer([4, 4], [[(0, 0) => [0], (0, 1) => [1]], [(1, 0) => [1], (1, 1) => [0, 1]])
+```
 """
 function E3ConvLayer(n_cs::Vector{Int}, pairingss::T, centers::Vector{Float32}) where T
     @assert length(n_cs) == length(pairingss) "Filters must be specified for each rotation representation. Put empty `ℓfs` for any `n_c = 0`."
