@@ -8,6 +8,8 @@ Let's consider the architecture used for the shape classification example in the
 Here, the aim is to classify a bunch of Tetris-like blocks, of which there are 8 distinct types.
 The intrinsic rotational symmetry of the network means that after being shown one example of each block, the classifier can be equally confident in recognising the blocks even when they are arbitrarily rotated.
 
+<img src="https://user-images.githubusercontent.com/19764906/213000338-b66906d0-5adf-414d-b2b9-b1ff17ae0d02.svg" width="200">
+
 Here's the network architecture, and here's how it's implemented in this repository.
 `Chain` is the `Flux.jl` structure that holds sequential layers.
 The most important (and complicated) component is the $SE(3)$-equivariant convolution layer `E3ConvLayer`.
