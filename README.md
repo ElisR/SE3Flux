@@ -12,7 +12,7 @@ Here's the network architecture, and here's how it's implemented in this reposit
 `Chain` is the `Flux.jl` structure that holds sequential layers.
 The most important (and complicated) component is the $SE(3)$-equivariant convolution layer `E3ConvLayer`.
 
-![Network architecture for shape classification.](Shape_Classification_Figure.svg)
+![TFN architecture for shape classification.](https://user-images.githubusercontent.com/19764906/212673994-37282db1-4695-434d-ba52-a4ed7d3cd15c.svg)
 
 ```julia
 centers = range(0f0, 3.5f0; length=4) |> collect
