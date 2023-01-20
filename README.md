@@ -2,8 +2,8 @@
 
 Implementing $SE(3)$-equivariant [Tensor Field Networks](https://arxiv.org/abs/1802.08219)[^1] (TFN) with [`Flux.jl`](https://github.com/FluxML/Flux.jl).
 This repository is not affiliated with the original paper in any way.
-Rather, the official library implementation of this work is the PyTorch variant [e3nn](https://github.com/e3nn/e3nn) and the JAX variant [e3nn-jax](https://github.com/e3nn/e3nn-jax).
-The Julia implementations of TFN and its derivatives are (as far as I know) non-existent.
+Rather, the official library implementations of this work are the written in PyTorch---[e3nn](https://github.com/e3nn/e3nn)---and JAX---[e3nn-jax](https://github.com/e3nn/e3nn-jax).
+A Julia implementations of TFN and its derivatives are (as far as I know) non-existent.
 This is a first step before I rewrite these equivariant layers in the style of [`GeometricFlux.jl`](https://github.com/FluxML/GeometricFlux.jl), which represents features with a graph.
 
 For those unfamiliar with TFN, I motivate this architecture at the end of this README.
@@ -11,7 +11,14 @@ For those unfamiliar with TFN, I motivate this architecture at the end of this R
 ## Usage
 
 A disadvantage of TFN is that one must keep track of which rotation representation any given feature vector belongs to.
-As such, the format for storing feature vectors is (unavoidably) messier than a simple array.
+As such, the format for storing feature vectors is (inevitably) messier than a simple array.
+I keep the positions and feature vectors separate, since they are treated differently in the pipeline.
+
+Raw cartesian positions `rs` of points in the point cloud (e.g. `rs = rand(Float32, (num_points, 3, batch_size)`) must first be transformed as `rrs = rs |> pairwise_rs |> cart_to_sph`.
+The function `pairwise_rs` calculates an array of size `size(rs |> pairwise_rs) == (num_points, num_points, 3, batch_size)`, which we then transform from cartesian to spherical coordinates `[x, y, z] -> [r, θ, ϕ]`.
+We do this beforehand because it only needs to be done once.
+
+Because of this array implementation, all point clouds must have the same number of points.
 
 ### Example
 
@@ -29,24 +36,24 @@ We keep track of the rotation representations of the feature vectors with $\ell$
 Applying the convolution is equivalent to taking the tensor product with a filter that has its own rotation representation $\ell_f$.
 Augmenting a representation $\ell_i$ with a filter $\ell_f$ produces a sum of representations $\ell_o$ in the range $| \ell_i - \ell_f | \leq \ell_o \leq \ell_i + \ell_f$ (resembling a triangle inequality between vectors).
 As detailed in the paper, special care is taken to ensure that the tensor product transforms appropriately under rotation, by weighting different terms in this sum by so-called [Clebsch-Gordan coefficients](https://en.wikipedia.org/wiki/Clebsch%E2%80%93Gordan_coefficients).
-In the network below, we choose to discard any $\ell > 1$ terms.
+In the network below, we choose to discard any $\ell > 1$ terms to save resources.
 
 <p align="center">
 <img src="https://user-images.githubusercontent.com/19764906/212673994-37282db1-4695-434d-ba52-a4ed7d3cd15c.svg" width=700>
 </p>
 
-In this repository, this is implemented with the following code block.
-`Chain` is the `Flux.jl` structure that holds sequential layers.
+In this repository, this network is implemented with the following code block.
 At all points we must specify the number of channels for each $\ell$.
 The most important (and complicated) component is the $SE(3)$-equivariant convolution layer `E3ConvLayer`.
 The remaining components are non-linear and self-interaction layers, used to scale feature vectors pointwise and mix channels, respectively, done in such a way as to preserve equivariance.
 We take care that the number of output and input channels for every layer is correctly specified at the time of construction.
 (Above, the number of channels with a particular representation is given by $[n]$.)
-The final three steps are standard pooling, dense and softmax layers used for classification of the eight shapes.
+The final three steps are standard pooling, dense and _softmax_ layers used for classification of the eight shapes.
 
 ```julia
 centers = range(0f0, 3.5f0; length=4) |> collect
 
+# `Chain` is the `Flux.jl` constructor for sequential layers
 classifier = Chain(
                 SIWrapper([1 => 4]),
                 E3ConvLayer([4], [[(0, 0) => [0], (0, 1) => [1]]], centers),
@@ -70,7 +77,8 @@ classifier = Chain(
 
 Rotational and translational symmetry are common in nature.
 It is therefore useful to have neural networks that can exploit this simplified structure of many physical problems, without needing to carry around redundant information.
-This is solved by making layers _equivariant_ (reviewed in detail in the [Geometric Deep Learning](https://arxiv.org/abs/2104.13478) textbook), meaning that the output transforms appropriately when the input is transformed.
+(For example, a naïve approach to approximating symmetric functions is training networks on _augmented data_, namely data that has been bulked up with transformed copies, but in that case no promises can be made about equivariance outside the training dataset.)
+This is solved by making layers _equivariant_ with respect to a symmetry group (reviewed in detail in the [Geometric Deep Learning](https://arxiv.org/abs/2104.13478) textbook), meaning that the output transforms appropriately when the input is transformed.
 There are many ways to design such neural network architectures, often with a trade-off between expressivity and computational cost.
 
 The _Tensor Field Network_ (TFN) is built from matrix representations of rotations and acts on point clouds of features.
@@ -82,10 +90,10 @@ Some follow-up works such as [SE(3)-Transformers](https://arxiv.org/abs/2006.105
 
 A neural network acts on feature vectors, which are sometimes physical quantities.
 These quantities can transform differently under rotation depending on their _rotation representation_, indexed by the non-negative integer $\ell$.
-This distinction is obvious if we compare a scalar (such as an object's mass) to a vector (such as its velocity, where "vector" refers to a geometric quantity, and not just a one-dimensional array of numbers):
+This distinction is obvious if we compare a scalar (such as an object's mass) to a vector (such as its velocity, where "vector" now refers to a geometric quantity, and not just a one-dimensional array of numbers):
 One does not change at all under rotation, while the other changes direction.
 In representation theory (the study of maps from abstract symmetry groups to linear transformations, i.e., matrices), we say that the scalar transforms under the $\ell = 0$ irreducible representation (irrep), whereas the vector transforms under the $\ell = 1$ irrep.
-(In quantum physics, these matrices act on the wavefunction of a particle, in which case $\ell$ corresponds to _angular momentum_.)
+(In quantum physics, these matrices act on the wavefunction of a particle, in which case $\ell$ corresponds to its _angular momentum_.)
 The matrices in an irreducible representation have dimension $(2\ell + 1) \times (2\ell + 1)$, so the transformation of quantities with higher $\ell$ are more costly to compute.
 
 [^1]: Despite its name, this is completely unrelated "Tensor Networks" used in condensed matter, for which you instead want [`ITensors.jl`](https://github.com/ITensor/ITensors.jl) or a related package.
