@@ -1,22 +1,35 @@
 """
-One simple ``\\mathbb{R} \\geq 0 \\mapsto \\mathbb{R}`` function broadcasted across every elements of the array.
-Function is a linear combination of basis functions ``\\sum_i a_i f_i(r)``, with learned weightings ``a_i``.
+Structure for learned radial function, which is unique to every channel.
+Holds learned weight vector `as` ``\{a_i\}`` and fixed `spacing` ``\\rho`` and vector `centers` ``\{c_i\}``.
 """
 struct RLayer{A, V, Γ}
-    as::A # TODO Maybe add another NN to copy TFN
+    as::A
     
     centers::V
     spacing::Γ
 end
 
+"""
+    `RLayer(centers; init = Flux.glorot_uniform)`
+
+Constructor for `RLayer`, which holds a linear combination of radial basis functions ``\\sum_i a_i f_i(r)``, with learned weightings ``a_i`` initialised according to `init` function.
+Radial basis functions by default chosen to be ``f_i(r) = e^{- \\rho (r - c_i)^2}``.
+Set ``\{c_i\}`` fixed by `centers` in constructor, assumed to be in increasing order, while `\\gamma` is fixed to mean spacing between ``\{c_i\}``.
+"""
 function RLayer(centers; init=Flux.glorot_uniform)
     n_basis = length(centers)
     spacing = (centers[end] - centers[1]) / n_basis
     RLayer(init(n_basis), centers, spacing)
 end
 
+"""
+    `rlayer(rrs)`
+
+Forward pass of an ``\\mathbb{R} \\geq 0 \\mapsto \\mathbb{R}`` function broadcasted across every element of an array of pairwise radii `rrs`.
+`rrs` consists of radial distances between all pairs of points, stored in `[b, a, B]` format, where `b` and `a` index the distance ``r_{ab}`` between the particles ``b`` and ``a`` respectively, where `B` is the batch index.
+"""
 function (R::RLayer)(radials)
-    # TODO Allow custom spec radial basis functions
+    # TODO Allow for arbitrary radial basis functions in constructor.
     based = Flux.batch([@.(exp(- R.spacing * (radials - c)^2)) for c in R.centers])
     @reduce R_out[b, a, γ] := sum(k) R.as[k] * based[b, a, γ, k] 
 end
@@ -26,20 +39,26 @@ Flux.@functor RLayer (as,)
 """
 Structure for generating filters from TFN.
 `R` is the radial neural network.
-`Ys` is a list of **real** spherical ``Y_{\\ell m}`` harmonics ordered as ``[-\\ell_f, -(\\ell_f-1), \\ldots, \\ell_f-1, \\ell_f]``.
+`Ys` is a list of **real** spherical ``Y_{\\ell m}`` harmonics, ordered as ``[-\\ell_f, -(\\ell_f-1), \\ldots, \\ell_f-1, \\ell_f]``.
 """
 struct FLayer{r, y}
     R::r
 
     Ys::y
     ℓf::Int
+    tol::Real
 end
 
-function FLayer(Ys, centers::Vector{Float32})
+"""
+    `FLayer(Ys, centers; tol = 1f-7)`
+
+Constructor for `FLayer`, which constructs a filter with fixed rotation representation.
+"""
+function FLayer(Ys, centers; tol = 1f-7)
     R = RLayer(centers)
 
     ℓf = (length(Ys) - 1) ÷ 2
-    FLayer(R, Ys, ℓf)
+    FLayer(R, Ys, ℓf, tol)
 end
 
 function (F::FLayer)(rr)
@@ -47,10 +66,11 @@ function (F::FLayer)(rr)
     rr_rs = @view rr[:, :, 1, :]
     R_out = F.R(rr_rs)
 
-    # TODO Set the masking tolerance in constructor
-    mask = @. abs(rr_rs) > 1e-7
+    # Mask out cases where `r_ab = 0`
+    # Needed since angle is undefined and hence not equivariant
+    mask = @. abs(rr_rs) > tol
 
-    # Multiply by SH components
+    # Calculate SH components
     θs = @view rr[:,:,2,:]
     ϕs = @view rr[:,:,3,:]
     Y_out = Flux.batch([Y.(θs, ϕs) for Y in F.Ys])
