@@ -31,7 +31,7 @@ Forward pass of an ``\\mathbb{R} \\geq 0 \\mapsto \\mathbb{R}`` function broadca
 function (R::RLayer)(radials)
     # TODO Allow for arbitrary radial basis functions in constructor.
     based = Flux.batch([@.(exp(- R.spacing * (radials - c)^2)) for c in R.centers])
-    @reduce R_out[b, a, γ] := sum(k) R.as[k] * based[b, a, γ, k] 
+    @reduce R_out[b, a, γ] := sum(k) R.as[k] * based[b, a, γ, k]
 end
 
 Flux.@functor RLayer (as,)
@@ -228,7 +228,6 @@ Output a matrix indexed by `[c, γ]`.
 """
 (pl::PLayer)(rssVs::Tuple) = pl(rssVs...)
 function (pl::PLayer)(rss, (Vs,))
-    #[dropdims(sum(V, dims=1); dims=1) for V in Vs]
     Vstack = batch(Vs)
     dropdims(sum(Vstack, dims=1); dims=(1, 3))' # TODO Turn this into NNlib.meanpool call
 end
@@ -285,7 +284,6 @@ function E3ConvLayer(n_cs::Vector{Int}, pairingss::T, centers::Vector{Float32}) 
 
             channel_convs = [CLayer((ℓi, ℓf) => ℓos, centers; ℓ_max = ℓ_max) for _ in 1:n_c]
 
-            # Single element things are messing it up
             p = ParallelPassenger(tuple_connect, Tuple(channel_convs))
             push!(in_channel, p)
         end
@@ -309,6 +307,18 @@ struct SIWrapper
     p
 end
 
+"""
+Constructor for self-interaction.
+Used to mix features with a particular rotation representation and increase/decrease the number of channels.
+`pairs::Vector{Pair{Int, Int}}` takes the form `[ni0 => no0, ni1 => no1, ni2 => no2, ...]``.
+Each pair denotes (in order) the number of input and output channels in each representation, starting from `ℓ = 0`.
+Forward pass calls `SILayer` on each rotation representation.
+
+e.g. for Tetris example in TFN paper, we have:
+```jldoctest
+si2 = SIWrapper([4 => 4, 4 => 4])
+```
+"""
 function SIWrapper(pairs::Vector{Pair{Int, Int}})
     SIs = Tuple(SILayer(in => out) for (in, out) in pairs)
     p = Passenger(triv_connect, SIs...)
@@ -324,6 +334,18 @@ struct NLWrapper
     p
 end
 
+"""
+Constructor for non-linearity.
+Used to apply point-wise non-linearity to each rotation representationsuch that equivariance is preserved.
+`channels::Vector{Int}` takes the form `[n0, n1, n2, ...]``.
+Each `nℓ` in the ordered vector is the number of channels in representation `ℓ``, starting from `ℓ = 0`.
+Forward pass calls `NLLayer` on each rotation representation.
+
+e.g. for Tetris example in TFN paper, we have:
+```jldoctest
+nl1 = SIWrapper([4, 4])
+```
+"""
 function NLWrapper(channels::Vector{Int})
     NLs = Tuple(NLLayer(channel) for channel in channels)
     p = Passenger(triv_connect, NLs...)
